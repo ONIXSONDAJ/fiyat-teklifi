@@ -206,9 +206,9 @@
     <div class="toolbar-group currency-tool" aria-label="Para birimi seçimi"><span class="currency-label">PARA BİRİMİ</span><div class="currency-picker"><button type="button" data-currency="TRY" onclick="setCurrency('TRY')">₺ TL</button><button type="button" data-currency="USD" onclick="setCurrency('USD')">$ USD</button><button type="button" data-currency="EUR" onclick="setCurrency('EUR')">€ EUR</button></div></div>
     <div class="toolbar-group zoom-tool" aria-label="Görünüm boyutu"><button type="button" onclick="stepZoom(-1)" title="Küçült" aria-label="Küçült">−</button><span id="zoom-label" class="zoom-label">%100</span><button type="button" onclick="stepZoom(1)" title="Büyüt" aria-label="Büyüt">＋</button><button type="button" onclick="resetZoom()" title="Ekrana sığdır" aria-label="Ekrana sığdır">⤢</button></div><div class="toolbar-group toolbar-table-tools drilling-only"><button class="add-section" onclick="addSection()">＋ Yeni Bölüm</button><button class="add-item" onclick="addItem()">＋ Yeni Kalem</button></div>
     <div class="toolbar-group pump-only hidden"><label class="theme-picker">RENK <select id="pump-theme" onchange="setPumpTheme(this.value)"><option value="teal">Turkuaz</option><option value="navy">Lacivert</option><option value="green">Yeşil</option><option value="burgundy">Bordo</option><option value="graphite">Gri</option></select></label></div>
-    <div class="toolbar-group"><button onclick="checkDocument()">PDF Kontrolü</button><button onclick="saveSharedNow()">Teklifi Kaydet</button><button class="primary" onclick="printDocument('pdf')">PDF Olarak Kaydet</button><button onclick="printDocument('printer')">Yazdır</button><button class="danger" onclick="resetData()">Örneğe Dön</button></div>
+    <div class="toolbar-group"><button onclick="checkDocument()">PDF Kontrolü</button><button onclick="newOffer()">＋ Yeni Teklif</button><button onclick="saveSharedNow()">Teklifi Kaydet</button><button class="primary" onclick="printDocument('pdf')">PDF Olarak Kaydet</button><button onclick="printDocument('printer')">Yazdır</button><button class="danger" onclick="resetData()">Örneğe Dön</button></div>
   </div>
-  <div class="hint screen-only app-ui hidden"><b>Düzenleme modu:</b> Teklif tarihi ve geçerlilik tarihi otomatik gelir, üzerine tıklayıp elle de yazabilirsiniz. Yeni bölüm ve kalem ekleme düğmeleri üst menüdedir. Satır işlemleri ilgili satırın yanındaki <b>＋ ↑ ↓ ⧉ ×</b> menüsündedir; bu araçlar PDF çıktısında görünmez.</div>
+  <div class="hint screen-only app-ui hidden"><b>Düzenleme modu:</b> Yeni bir müşteriye teklif hazırlarken üst menüden <b>＋ Yeni Teklif</b> deyin; yeni numara alır ve önceki teklifin üstüne yazılmaz. Teklif tarihi ve geçerlilik tarihi otomatik gelir, üzerine tıklayıp elle de yazabilirsiniz. Yeni bölüm ve kalem ekleme düğmeleri üst menüdedir. Satır işlemleri ilgili satırın yanındaki <b>＋ ↑ ↓ ⧉ ×</b> menüsündedir; bu araçlar PDF çıktısında görünmez.</div>
   <main id="document" class="app-ui module-document hidden" data-module="drilling">
     <section class="page cover">
       <div class="brand"><span></span><div><img class="logo" src="__LOGO_COVER__"><div class="brand-address" contenteditable="true">OSTİM MAHALLESİ UZAY ÇAĞI CADDESİ NO: 140/1 06374 YENİMAHALLE / ANKARA<br>Tel: 0312 354 12 38 - 0312 354 4147 &nbsp; Fax: 0312 385 15 80<br>OSTİM V.D. 0300095886 / Tic. Sic. No: 42854 &nbsp; Mersis No: 0300009588600010<br><em>info@akkoyunlumakina.com.tr</em></div></div></div>
@@ -496,8 +496,19 @@
       }
       const c=await cloud();
       if(c){
-        try{await c.put(record);record._bekliyor=false}
-        catch(e){console.warn('Buluta yazılamadı, cihazda bekletiliyor',e);record._bekliyor=true}
+        /* Firestore'un yazma sozu sunucu onayina kadar bekler; baglanti
+           yavassa ekran kilitleniyordu. Kisa surede birakiyoruz: yazma
+           SDK kuyrugunda kalir ve baglanti gelince kendiliginden tamamlanir. */
+        try{
+          await Promise.race([
+            c.put(record),
+            new Promise((_,red)=>setTimeout(()=>red(new Error('bulut yanıtı gecikti')),6000))
+          ]);
+          record._bekliyor=false;
+        }catch(e){
+          console.warn('Bulut yazması beklemede:',e);
+          record._bekliyor=true;
+        }
         await cachePut(record);
         return record;
       }
@@ -720,10 +731,25 @@
     function currentProjectIdentity(){const no=currentOfferNo();return no?normalizeIdentityPart(`${currentModule}|${no}`):[currentModule,currentCustomerName(),currentOfferDate()].map(normalizeIdentityPart).join('|')}
     async function saveInternalProject(parsed=projectPayload()){
       const identity=currentProjectIdentity();
+      const musteri=normalizeIdentityPart(currentCustomerName());
       let id=currentSavedDocumentId||'';
-      if(!id){
-        try{const records=await listSavedRecords(),same=records.find(record=>record.identity===identity||(record.offerNo&&record.offerNo===currentOfferNo()));if(same)id=same.id}catch(_){/* Yeni kayit olusturulur. */}
-      }
+      /* Teklif numarasi ayni gun boyunca sabit kalir. Musteri kontrolu
+         yapilmazsa ayni gun hazirlanan ikinci teklif, birincinin ustune
+         yaziliyordu. Bu yuzden yalnizca AYNI musterinin teklifi
+         guncellenir; musteri degistiyse yeni kayit acilir ve asagidaki
+         numara catismasi mantigi yeni teklif numarasi verir. */
+      try{
+        const records=await listSavedRecords();
+        if(id){
+          const acik=records.find(r=>r.id===id);
+          if(acik&&normalizeIdentityPart(acik.customer||'')!==musteri)id='';
+        }
+        if(!id){
+          const same=records.find(r=>normalizeIdentityPart(r.customer||'')===musteri&&
+            (r.identity===identity||(r.offerNo&&r.offerNo===currentOfferNo())));
+          if(same)id=same.id;
+        }
+      }catch(_){/* Ulasilamazsa yeni kayit olusturulur. */}
       const record={id:id||newSavedId(),identity,name:projectFileName(),module:parsed.module,customer:currentCustomerName(),offerNo:currentOfferNo(),offerDate:currentOfferDate(),updatedAt:new Date().toISOString(),project:parsed};
       const saved=await writeSavedRecord(record);
       try{await cachePut(saved||record)}catch(_){ }
@@ -833,7 +859,7 @@
       refreshCurrencyUI();
       document.querySelectorAll('.pump-only').forEach(el=>el.classList.toggle('hidden',module!=='pump'));
       document.querySelectorAll('.drilling-only').forEach(el=>el.classList.toggle('hidden',module==='pump'));
-      document.querySelector('.hint').innerHTML=module==='pump'?'<b>Pompa teklifi:</b> Telefonda üst menüdeki ＋ − düğmeleriyle görünümü büyütüp küçültebilirsiniz. Satırlar otomatik numaralanır ve hesaplanır. Renk temasını üst menüden değiştirebilirsiniz.':'<b>Düzenleme modu:</b> Teklif tarihi ve geçerlilik tarihi otomatik gelir, üzerine tıklayıp elle de yazabilirsiniz. Yeni bölüm ve kalem ekleme düğmeleri üst menüdedir. Satır işlemleri ilgili satırın yanındaki <b>＋ ↑ ↓ ⧉ ×</b> menüsündedir; bu araçlar PDF çıktısında görünmez.';
+      document.querySelector('.hint').innerHTML=module==='pump'?'<b>Pompa teklifi:</b> Telefonda üst menüdeki ＋ − düğmeleriyle görünümü büyütüp küçültebilirsiniz. Satırlar otomatik numaralanır ve hesaplanır. Renk temasını üst menüden değiştirebilirsiniz.':'<b>Düzenleme modu:</b> Yeni bir müşteriye teklif hazırlarken üst menüden <b>＋ Yeni Teklif</b> deyin; yeni numara alır ve önceki teklifin üstüne yazılmaz. Teklif tarihi ve geçerlilik tarihi otomatik gelir, üzerine tıklayıp elle de yazabilirsiniz. Yeni bölüm ve kalem ekleme düğmeleri üst menüdedir. Satır işlemleri ilgili satırın yanındaki <b>＋ ↑ ↓ ⧉ ×</b> menüsündedir; bu araçlar PDF çıktısında görünmez.';
       saveViewState('module');
       applyAutomaticIdentityToUI(module);
       if(!suppressAutoIdentity)ensureAutomaticIdentity(module);
@@ -1041,6 +1067,18 @@
       document.getElementById('project-file-input').click();
     }
     function openProjectFile(inp){let f=inp.files[0];if(!f)return;let r=new FileReader();r.onload=()=>{try{applyOpenedProject(JSON.parse(r.result),null,f.name)}catch(e){alert('Bu proje dosyası açılamadı. Dosya bozuk veya farklı bir formata ait olabilir.')}finally{inp.value=''}};r.readAsText(f)}
+    /* Yeni bir musteriye teklif hazirlarken acik kayittan kopar ve
+       yeni teklif numarasi al. Sayfadaki icerik olduğu gibi kalir,
+       boylece benzer bir teklif sablon olarak kullanilabilir. */
+    async function newOffer(){
+      currentSavedDocumentId='';currentProjectHandle=null;currentProjectName='';
+      if(currentModule==='pump')pumpData.autoIdentityDate='';else data.autoIdentityDate='';
+      suppressAutoIdentity=false;
+      await ensureAutomaticIdentity(currentModule);
+      saveData();
+      const no=currentOfferNo();
+      status(no?`Yeni teklif no: ${no}`:'Yeni teklif başlatıldı');
+    }
     async function saveSharedNow(){
       try{await saveInternalProject(projectPayload());status(SHARED_MODE?'Ortak arşive kaydedildi':'Bu bilgisayara kaydedildi')}
       catch(e){console.error(e);alert('Teklif ortak arşive kaydedilemedi. Ortak KAYITLAR klasörü bağlantısını kontrol edin.')}
