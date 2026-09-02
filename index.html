@@ -1414,6 +1414,10 @@
     window.addEventListener('orientationchange',()=>setTimeout(applyMobileFit,180));
     applyMobileFit();
 
+    /* Sablonun metin alanlari, teklif tablosu cizildikten SONRA alinir:
+       bolum toplami hucreleri de duzenlenebilir alan sayildigi icin
+       tablo bosken alinan goruntu indisleri kaydiriyordu. */
+    renderOffer();renderConditions();renderReferences();
     PRISTINE_FREE_TEXT=collectFreeText();
     loadData();
     initializeSharedArchive();
