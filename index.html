@@ -196,7 +196,7 @@
         <div class="saved-documents-head"><div><h2 id="saved-documents-title">Kayıtlı Belgeler</h2><span>Şirket ortak arşivinde saklanan teklif projeleri</span></div><span id="saved-documents-count">0 belge</span></div>
         <div id="saved-documents-list" class="saved-documents-list"><div class="saved-empty">Henüz kayıtlı belge yok.</div></div>
       </section>
-      <div class="launcher-footer"><span id="launcher-mode-note">Şirket içi ortak sistem · Kayıtlar ortak KAYITLAR klasöründe tutulur</span><span>Güncel sürüm: V24 · Sistem Arşivi · Telefon ve Bilgisayar · Otomatik Tarih / Teklif No</span></div>
+      <div class="launcher-footer"><span id="launcher-mode-note">Şirket içi ortak sistem · Kayıtlar ortak KAYITLAR klasöründe tutulur</span><span>Güncel sürüm: V25 · Ortak Bulut Arşivi · Telefon ve Bilgisayar · Otomatik Tarih / Teklif No</span></div>
     </div>
   </section>
   <div class="toolbar screen-only app-ui hidden">
@@ -267,6 +267,38 @@
        Teklif formati, sayfa duzeni, teklif no ve hesaplar degismez.    ---- */
     const SHARED_FOLDER_SUPPORTED=false;
     const LOCAL_ARCHIVE=true;
+
+    /* ---- ORTAK BULUT ARSIVI ----------------------------------------------
+       Teklifler Firebase Firestore'da ortak tutulur. Kim kaydederse
+       herkeste, her cihazda ve her tarayicida ayni liste gorunur.
+       Internet yoksa program calisir; kayit cihazda bekler ve baglanti
+       gelince kendiliginden esitlenir.                                ---- */
+    let cloudApi=null,cloudResolve=null;
+    const CLOUD_READY=new Promise(resolve=>{cloudResolve=resolve});
+    window.__ortakArsivHazir=api=>{cloudApi=api||null;cloudResolve(cloudApi)};
+    async function cloud(){
+      if(cloudApi)return cloudApi;
+      return await Promise.race([CLOUD_READY,new Promise(r=>setTimeout(()=>r(null),15000))]);
+    }
+    /* Baglanti kopukken kaydedilenler isaretlenir; sonra otomatik gonderilir. */
+    async function syncPending(){
+      const c=await cloud();
+      if(!c)return 0;
+      let bekleyen=[];
+      try{bekleyen=(await cacheGetAll()).filter(r=>r&&r._bekliyor)}catch(_){return 0}
+      let gonderilen=0;
+      for(const r of bekleyen){
+        try{await c.put(r);r._bekliyor=false;await cachePut(r);gonderilen++}
+        catch(e){console.warn('Bekleyen kayıt gönderilemedi:',r.id,e)}
+      }
+      return gonderilen;
+    }
+    /* Baska bir cihaz kayit yaptiginda liste kendiliginden tazelenir. */
+    window.__ortakArsivDegisti=()=>{
+      const launcher=document.getElementById('launcher');
+      if(launcher&&!launcher.classList.contains('hidden'))renderSavedDocuments().catch(()=>{});
+    };
+    window.addEventListener('online',()=>{syncPending().then(k=>{if(k)status(`${k} bekleyen teklif buluta gönderildi`)}).catch(()=>{})});
 
     function openHandleDatabase(){
       return new Promise((resolve,reject)=>{
@@ -347,7 +379,7 @@
     function updateSharedFolderStatus(text,ok=false){
       const label=document.getElementById('shared-folder-status'),badge=document.getElementById('shared-mode-badge');
       if(label)label.textContent=text;
-      if(badge){badge.textContent=LOCAL_ARCHIVE?'SİSTEM ARŞİVİ':(ok?'ORTAK ARŞİV BAĞLI':'ORTAK ARŞİV BAĞLANTISI YOK');badge.classList.toggle('offline',!ok)}
+      if(badge){badge.textContent=cloudApi?'ORTAK ARŞİV':'CİHAZ ARŞİVİ';badge.classList.toggle('offline',!cloudApi)}
     }
     function showSharedFolderGate(message=''){
       // V21: Başlangıçta ekranı kilitleyen modal tamamen kaldırıldı.
@@ -431,6 +463,8 @@
     function recordFileName(id){return String(id||'').replace(/[^A-Za-z0-9._-]/g,'_').slice(0,180)+'.json'}
     async function readJsonFileHandle(fileHandle){const file=await fileHandle.getFile();return JSON.parse(await file.text())}
     async function listSavedRecords(){
+      const c=await cloud();
+      if(c)return await c.list();
       if(LOCAL_ARCHIVE)return await cacheGetAll();
       const dir=await requireSharedFolder(),records=[];
       for await(const [name,handle] of dir.entries()){
@@ -440,6 +474,8 @@
       return records;
     }
     async function readSavedRecord(id){
+      const c=await cloud();
+      if(c)return await c.get(id);
       if(LOCAL_ARCHIVE)return await cacheGet(id);
       const dir=await requireSharedFolder();
       try{return await readJsonFileHandle(await dir.getFileHandle(recordFileName(id)))}catch(e){if(e?.name==='NotFoundError')return null;throw e}
@@ -458,12 +494,22 @@
           else{record.project.payload.meta.offerNo=next;data.meta.offerNo=next;applyAutomaticIdentityToUI('drilling')}
         }
       }
-      if(LOCAL_ARCHIVE){await cachePut(record);return record}
+      const c=await cloud();
+      if(c){
+        try{await c.put(record);record._bekliyor=false}
+        catch(e){console.warn('Buluta yazılamadı, cihazda bekletiliyor',e);record._bekliyor=true}
+        await cachePut(record);
+        return record;
+      }
+      if(LOCAL_ARCHIVE){record._bekliyor=true;await cachePut(record);return record}
       const handle=await dir.getFileHandle(recordFileName(record.id),{create:true});
       const writer=await handle.createWritable();await writer.write(JSON.stringify(record,null,2));await writer.close();
       return record;
     }
-    async function removeSavedRecord(id){if(LOCAL_ARCHIVE){await cacheDelete(id);return true}const dir=await requireSharedFolder();try{await dir.removeEntry(recordFileName(id))}catch(e){if(e?.name!=='NotFoundError')throw e};return true}
+    async function removeSavedRecord(id){
+      const c=await cloud();
+      if(c){try{await c.remove(id)}catch(e){console.warn('Buluttan silinemedi',e)}await cacheDelete(id);return true}
+      if(LOCAL_ARCHIVE){await cacheDelete(id);return true}const dir=await requireSharedFolder();try{await dir.removeEntry(recordFileName(id))}catch(e){if(e?.name!=='NotFoundError')throw e};return true}
     function openLegacySavedDatabase(){
       return new Promise(async(resolve,reject)=>{
         try{
@@ -581,8 +627,15 @@
       updateLegacyMigrationButton();
       if(LOCAL_ARCHIVE){
         const note=document.getElementById('launcher-mode-note');
-        if(note)note.textContent='Kayıtlar programın kendi kalıcı arşivinde tutulur';
-        updateSharedFolderStatus('Sistem arşivi hazır',true);
+        const c=await cloud();
+        if(c){
+          if(note)note.textContent='Ortak bulut arşivi · Teklifler tüm cihazlarda ve tüm çalışanlarda görünür';
+          updateSharedFolderStatus('Ortak arşive bağlı',true);
+          try{const k=await syncPending();if(k)status(`${k} bekleyen teklif buluta gönderildi`)}catch(_){ }
+        }else{
+          if(note)note.textContent='Bağlantı yok · Kayıtlar bu cihazda bekliyor, internet gelince eşitlenecek';
+          updateSharedFolderStatus('Ortak arşive ulaşılamıyor · Cihazda çalışılıyor',false);
+        }
         await renderSavedDocuments();
         return;
       }
@@ -603,9 +656,18 @@
       let records=[],fromCache=false;
       try{
         records=(await listSavedRecords()).sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));
-        if(!LOCAL_ARCHIVE){try{await cacheReplaceAll(records)}catch(e){console.warn('Ortak arşiv yerel önbelleğe alınamadı',e)}}
-        count.textContent=`${records.length} belge · ${LOCAL_ARCHIVE?'SİSTEM ARŞİVİ':'ORTAK ARŞİV'}`;
-        if(badge){badge.textContent=LOCAL_ARCHIVE?'SİSTEM ARŞİVİ':'ORTAK ARŞİV BAĞLI';badge.classList.remove('offline')}
+        if(cloudApi){
+          /* Bulut listesi cihaza yedeklenir; henuz gonderilememis kayitlar korunur. */
+          try{
+            const yerel=await cacheGetAll();
+            const bekleyen=yerel.filter(r=>r&&r._bekliyor&&!records.some(x=>x.id===r.id));
+            await cacheReplaceAll(records.concat(bekleyen));
+            if(bekleyen.length)records=records.concat(bekleyen).sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));
+          }catch(e){console.warn('Bulut listesi cihaza yedeklenemedi',e)}
+        }
+        const bekleyenSayisi=records.filter(r=>r&&r._bekliyor).length;
+        count.textContent=`${records.length} belge · ${cloudApi?'ORTAK BULUT ARŞİVİ':'CİHAZ ARŞİVİ'}${bekleyenSayisi?` · ${bekleyenSayisi} bekliyor`:''}`;
+        if(badge){badge.textContent=cloudApi?'ORTAK ARŞİV':'CİHAZ ARŞİVİ';badge.classList.toggle('offline',!cloudApi)}
       }catch(e){
         console.warn('Arşiv okunamadı, önbellek kullanılacak.',e);
         try{records=(await cacheGetAll()).sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)))}catch(_){records=[]}
@@ -616,7 +678,7 @@
       }
       if(!records.length){
         list.innerHTML=LOCAL_ARCHIVE
-          ?'<div class="saved-empty">Henüz kayıtlı belge yok. Kaydettiğiniz teklifler burada listelenir.</div>'
+          ?'<div class="saved-empty">Henüz kayıtlı belge yok. Kaydettiğiniz teklifler burada, tüm cihazlarda ve tüm çalışanlarda görünecek.</div>'
           :(fromCache?'<div class="saved-empty">Bu bilgisayarda henüz ortak arşiv önbelleği yok. Bir kez <b>Ortak Arşivi Etkinleştir</b> ile KAYITLAR klasörüne bağlanın.</div>':'<div class="saved-empty">Henüz kayıtlı belge yok. Kaydettiğiniz teklifler burada tüm çalışanlara görünecek.</div>');
         return;
       }
@@ -1289,5 +1351,74 @@
     };
     document.querySelectorAll('img').forEach(img=>{if(EMBEDDED_ASSETS[img.getAttribute('src')])img.src=EMBEDDED_ASSETS[img.getAttribute('src')]});
   </script>
+<script type="module">
+/* ====================================================================
+   ORTAK BULUT ARSIVI - Firebase Firestore
+   Teklifler 'teklifler' bolumunde tutulur. Bu ayarlar istemci
+   tarafinda calisir ve herkese acik olacak sekilde tasarlanmistir;
+   erisim Firestore guvenlik kurallarindan yonetilir.
+   ==================================================================== */
+const CONFIG={
+  apiKey:"AIzaSyD5U6qhi4M5L5PDVzPF_gNHJFxkcQjYBhY",
+  authDomain:"akkoyunlu-teklif.firebaseapp.com",
+  projectId:"akkoyunlu-teklif",
+  storageBucket:"akkoyunlu-teklif.firebasestorage.app",
+  messagingSenderId:"234010696256",
+  appId:"1:234010696256:web:230239f7d3a983745f1da5"
+};
+const SDK='https://www.gstatic.com/firebasejs/11.0.2';
+const BOLUM='teklifler';
+try{
+  const {initializeApp}=await import(`${SDK}/firebase-app.js`);
+  const {getFirestore,collection,doc,getDoc,getDocs,setDoc,deleteDoc,onSnapshot}=
+    await import(`${SDK}/firebase-firestore.js`);
+  const db=getFirestore(initializeApp(CONFIG));
+  const kok=collection(db,BOLUM);
+
+  /* Firestore ic ice dizi kabul etmedigi icin teklif icerigi metin olarak saklanir. */
+  const disari=d=>{
+    const v=d.data()||{};
+    let project=null;
+    try{project=v.projectJson?JSON.parse(v.projectJson):null}catch(_){ }
+    if(!project)return null;
+    return{id:d.id,identity:v.identity||'',name:v.name||'',module:v.module||'drilling',
+      customer:v.customer||'',offerNo:v.offerNo||'',offerDate:v.offerDate||'',
+      updatedAt:v.updatedAt||'',project};
+  };
+  const iceri=r=>({
+    identity:String(r.identity||''),name:String(r.name||''),
+    module:String(r.module||'drilling'),customer:String(r.customer||''),
+    offerNo:String(r.offerNo||''),offerDate:String(r.offerDate||''),
+    updatedAt:String(r.updatedAt||new Date().toISOString()),
+    projectJson:JSON.stringify(r.project||{})
+  });
+
+  /* Erisim testi: kurallar kapaliysa burada anlariz ve cihaz arsivine duseriz. */
+  await getDocs(kok);
+
+  let sonListe=null;
+  onSnapshot(kok,snap=>{
+    sonListe=snap.docs.map(disari).filter(Boolean);
+    try{window.__ortakArsivDegisti?.()}catch(_){ }
+  },err=>console.warn('Ortak arşiv dinlenemedi:',err));
+
+  window.__ortakArsivHazir({
+    async list(){
+      if(sonListe)return sonListe.slice();
+      return (await getDocs(kok)).docs.map(disari).filter(Boolean);
+    },
+    async get(id){
+      const d=await getDoc(doc(db,BOLUM,String(id)));
+      return d.exists()?disari(d):null;
+    },
+    async put(r){await setDoc(doc(db,BOLUM,String(r.id)),iceri(r))},
+    async remove(id){await deleteDoc(doc(db,BOLUM,String(id)))}
+  });
+  console.log('Ortak bulut arşivi bağlandı.');
+}catch(e){
+  console.warn('Ortak bulut arşivi başlatılamadı, cihaz arşivi kullanılacak:',e);
+  try{window.__ortakArsivHazir(null)}catch(_){ }
+}
+</script>
 </body>
 </html>
