@@ -205,7 +205,7 @@
         <div class="saved-documents-head"><div><h2 id="saved-documents-title">Kayıtlı Belgeler</h2><span>Şirket ortak arşivinde saklanan teklif projeleri</span></div><span id="saved-documents-count">0 belge</span></div>
         <div id="saved-documents-list" class="saved-documents-list"><div class="saved-empty">Henüz kayıtlı belge yok.</div></div>
       </section>
-      <div class="launcher-footer"><span id="launcher-mode-note">Şirket içi ortak sistem · Kayıtlar ortak KAYITLAR klasöründe tutulur</span><span>Güncel sürüm: V26 · Ortak Bulut Arşivi · Üzerine Yazmaz · Kaldığınız Yerden Devam</span></div>
+      <div class="launcher-footer"><span id="launcher-mode-note">Şirket içi ortak sistem · Kayıtlar ortak KAYITLAR klasöründe tutulur</span><span>Güncel sürüm: V27 · Ortak Bulut Arşivi · Üzerine Yazmaz · Silme Parolalı</span></div>
     </div>
   </section>
   <div class="toolbar screen-only app-ui hidden">
@@ -270,6 +270,25 @@
     /* Arsivden acilan teklif kopyadir: kaydedildiginde eskinin ustune
        yazilmaz, yeni belge olarak yeni numarayla kaydedilir. */
     let archiveCopy=false;
+    /* Teklif silme parolasi. Sayfa herkese acik oldugu icin parola duz
+       metin yazilmaz; yalnizca SHA-256 ozeti tutulur ve karsilastirilir. */
+    const SILME_PAROLA_OZETI='c7d3e97e36750b630f3e2f30335a958f7f6b1803f46091fdbc019d67ad4ec072';
+    async function parolaOzeti(metin){
+      const veri=new TextEncoder().encode(String(metin));
+      const buf=await crypto.subtle.digest('SHA-256',veri);
+      return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
+    }
+    async function silmeIzniVar(ad){
+      const girilen=prompt(`“${ad||'Bu belge'}” arşivden silinecek.
+
+Silme parolasını girin:`);
+      if(girilen===null)return false;
+      try{
+        if(await parolaOzeti(girilen.trim())===SILME_PAROLA_OZETI)return true;
+      }catch(e){console.error('Parola doğrulanamadı',e);alert('Parola doğrulanamadı. Belge silinmedi.');return false}
+      alert('Parola yanlış. Belge silinmedi.');
+      return false;
+    }
     let PRISTINE_FREE_TEXT=null;   /* sablonun dokunulmamis metinleri */
     function drillKey(m){return m==='core'?KAROT_STORAGE:STORAGE}
     const SAVED_DB='onix_teklif_belgeleri_v1',SAVED_STORE='documents',MAX_SAVED_DOCUMENTS=200;
@@ -805,7 +824,7 @@
       }catch(e){console.error(e);alert('Kayıtlı belge açılamadı.')}
     }
     async function deleteSavedDocument(id,name){
-      if(!confirm(`“${name||'Bu belge'}” ortak Kayıtlı Belgeler listesinden silinsin mi?`))return;
+      if(!await silmeIzniVar(name))return;
       try{await removeSavedRecord(id);try{await cacheDelete(id)}catch(_){ }if(currentSavedDocumentId===id)currentSavedDocumentId='';await renderSavedDocuments()}
       catch(e){console.error(e);alert('Kayıtlı belge silinemedi.')}
     }
