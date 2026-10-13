@@ -2,7 +2,7 @@
    Program dosyasi ve Firebase kitapligi cihaza alinir; internet yokken
    uygulama yine acilir. Teklif verisi Firestore'un kendi cevrimdisi
    deposunda tutulur ve baglanti gelince kendiliginden esitlenir. */
-const SURUM = 'teklif-v1';
+const SURUM = 'teklif-v2';
 const SDK = 'https://www.gstatic.com/firebasejs/11.0.2';
 const KABUK = [
   './',
@@ -59,8 +59,14 @@ self.addEventListener('fetch', olay => {
         if (yanit.ok) (await caches.open(SURUM)).put(istek, yanit.clone());
         return yanit;
       } catch (e) {
-        const bulunan = await caches.match(istek) || await caches.match('./index.html');
+        const bulunan = await caches.match(istek);
         if (bulunan) return bulunan;
+        /* Yalnizca sayfa acilisinda kabuga don; resim/veri isteklerine
+           koca sayfayi dondurmek anlamsiz olur. */
+        if (istek.mode === 'navigate') {
+          const kabuk = await caches.match('./index.html');
+          if (kabuk) return kabuk;
+        }
         throw e;
       }
     })());
