@@ -4,6 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>AKKOYUNLU Fiyat Teklifi</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#0e61ad">
+  <link rel="icon" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Fiyat Teklifi">
   <style>
     :root{--blue:#0e61ad;--blue2:#347eb8;--blue3:#5b9bd5;--line:#c8d1da;--soft:#f4f6f8;--yellow:#fff0c6;--grand:#ffd900;--ink:#132033}
     *{box-sizing:border-box}
@@ -1733,9 +1739,22 @@ const SDK='https://www.gstatic.com/firebasejs/11.0.2';
 const BOLUM='teklifler';
 try{
   const {initializeApp}=await import(`${SDK}/firebase-app.js`);
-  const {getFirestore,collection,doc,getDoc,getDocs,setDoc,deleteDoc,onSnapshot}=
+  const {initializeFirestore,persistentLocalCache,persistentMultipleTabManager,
+    collection,doc,getDoc,getDocs,setDoc,deleteDoc,onSnapshot}=
     await import(`${SDK}/firebase-firestore.js`);
-  const db=getFirestore(initializeApp(CONFIG));
+  /* Cevrimdisi calisma: teklifler cihazda kalici olarak tutulur. Internet
+     yokken liste okunur ve yeni teklif kaydedilir; baglanti gelince
+     Firestore kendiliginden esitler. */
+  let db;
+  try{
+    db=initializeFirestore(initializeApp(CONFIG),{
+      localCache:persistentLocalCache({tabManager:persistentMultipleTabManager()})
+    });
+  }catch(e){
+    console.warn('Çevrimdışı depo açılamadı, normal bağlantı kullanılacak:',e);
+    const {getFirestore}=await import(`${SDK}/firebase-firestore.js`);
+    db=getFirestore(initializeApp(CONFIG));
+  }
   const kok=collection(db,BOLUM);
 
   /* Firestore ic ice dizi kabul etmedigi icin teklif icerigi metin olarak saklanir. */
@@ -1782,6 +1801,16 @@ try{
   console.warn('Ortak bulut arşivi başlatılamadı, cihaz arşivi kullanılacak:',e);
   try{window.__ortakArsivHazir(null)}catch(_){ }
 }
+</script>
+<script>
+  /* Masaustune kurulabilir uygulama ve cevrimdisi calisma. */
+  if('serviceWorker' in navigator){
+    window.addEventListener('load',()=>{
+      navigator.serviceWorker.register('service-worker.js')
+        .then(r=>console.log('Çevrimdışı destek hazır.',r.scope))
+        .catch(e=>console.warn('Çevrimdışı destek kurulamadı:',e));
+    });
+  }
 </script>
 </body>
 </html>
